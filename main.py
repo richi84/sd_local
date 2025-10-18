@@ -2,7 +2,12 @@ import os
 from datetime import datetime
 from sd_local import StableDiffusionLocal
 from adetailer import run_adetailer
-from detectors import MediaPipeHandsDetector, YOLOv8Detector, SimpleSkinDetector  # optional
+from detectors import (
+    MediaPipeHandsDetector,
+    YOLOv8Detector,
+    SimpleSkinDetector,
+    OpenposeDetector,
+)  # optional
 
 sd = StableDiffusionLocal("models/cyberrealistic_v90")
 
@@ -42,6 +47,10 @@ try:
     detectors.append(YOLOv8Detector(weights="yolov8n.pt", conf=0.25))
 except Exception as e:
     print("[INFO] YOLOv8 not available:", e)
+try:
+    detectors.append(OpenposeDetector(include_body=True, include_hands=True, include_face=True))
+except Exception as e:
+    print("[INFO] OpenPose not available:", e)
 
 # 3) ADetailer-Refine mit Debug einschalten (nur Hände)
 refined = run_adetailer(
