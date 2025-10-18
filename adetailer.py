@@ -3,7 +3,8 @@ import math
 import os, json
 from typing import List, Optional, Literal, Tuple
 
-from PIL import Image, ImageDraw
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
 
 from detectors import BaseDetector, Detection, filter_by_targets, boxes_to_mask
 
@@ -62,6 +63,111 @@ def _save_crops(before: Image.Image, after: Image.Image, boxes, dir_path: str):
         a = after.crop((x1,y1,x2,y2))
         b.save(os.path.join(dir_path, f"crop_{k:02d}_before.png"))
         a.save(os.path.join(dir_path, f"crop_{k:02d}_after.png"))
+
+
+def _convolve2d(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    kh, kw = kernel.shape
+    pad_h, pad_w = kh // 2, kw // 2
+    padded = np.pad(image, ((pad_h, pad_h), (pad_w, pad_w)), mode="edge")
+    output = np.zeros_like(image, dtype=np.float32)
+    for i in range(image.shape[0]):
+        for j in range(image.shape[1]):
+            region = padded[i:i + kh, j:j + kw]
+            output[i, j] = float(np.sum(region * kernel))
+    return output
+
+
+def _non_max_suppression(magnitude: np.ndarray, angle: np.ndarray) -> np.ndarray:
+    H, W = magnitude.shape
+    result = np.zeros((H, W), dtype=np.float32)
+    angle = angle * 180.0 / np.pi
+    angle[angle < 0] += 180
+
+    for i in range(1, H - 1):
+        for j in range(1, W - 1):
+            q = 0.0
+            r = 0.0
+            ang = angle[i, j]
+
+            if (0 <= ang < 22.5) or (157.5 <= ang <= 180):
+                q = magnitude[i, j + 1]
+                r = magnitude[i, j - 1]
+            elif 22.5 <= ang < 67.5:
+                q = magnitude[i + 1, j - 1]
+                r = magnitude[i - 1, j + 1]
+            elif 67.5 <= ang < 112.5:
+                q = magnitude[i + 1, j]
+                r = magnitude[i - 1, j]
+            else:  # 112.5 <= ang < 157.5
+                q = magnitude[i - 1, j - 1]
+                r = magnitude[i + 1, j + 1]
+
+            if magnitude[i, j] >= q and magnitude[i, j] >= r:
+                result[i, j] = magnitude[i, j]
+    return result
+
+
+def _double_threshold(img: np.ndarray, low: float, high: float) -> Tuple[np.ndarray, float, float]:
+    res = np.zeros_like(img, dtype=np.uint8)
+    strong = 255
+    weak = 75
+
+    strong_mask = img >= high
+    weak_mask = (img >= low) & (img < high)
+
+    res[strong_mask] = strong
+    res[weak_mask] = weak
+    return res, weak, strong
+
+
+def _edge_tracking_by_hysteresis(img: np.ndarray, weak: float, strong: float) -> np.ndarray:
+    H, W = img.shape
+    for i in range(1, H - 1):
+        for j in range(1, W - 1):
+            if img[i, j] == weak:
+                neighborhood = img[i - 1:i + 2, j - 1:j + 2]
+                if np.any(neighborhood == strong):
+                    img[i, j] = strong
+                else:
+                    img[i, j] = 0
+    img[img != strong] = 0
+    return img
+
+
+def _canny_edges(image: Image.Image, low_threshold: float = 60.0, high_threshold: float = 120.0) -> Image.Image:
+    gray = image.convert("L")
+    blurred = gray.filter(ImageFilter.GaussianBlur(radius=1.0))
+    arr = np.array(blurred, dtype=np.float32)
+
+    Kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+    Ky = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=np.float32)
+    Gx = _convolve2d(arr, Kx)
+    Gy = _convolve2d(arr, Ky)
+
+    magnitude = np.hypot(Gx, Gy)
+    if magnitude.max() > 0:
+        magnitude = magnitude / magnitude.max() * 255.0
+    angle = np.arctan2(Gy, Gx)
+
+    suppressed = _non_max_suppression(magnitude, angle)
+    thresh, weak, strong = _double_threshold(suppressed, low_threshold, high_threshold)
+    edges = _edge_tracking_by_hysteresis(thresh, weak, strong)
+    return Image.fromarray(edges.astype(np.uint8), mode="L")
+
+
+def _build_edges_image(image: Image.Image, boxes: List[Tuple[int, int, int, int]]) -> Optional[Image.Image]:
+    if not boxes:
+        return None
+
+    edges_canvas = Image.new("L", image.size, 0)
+    for x1, y1, x2, y2 in boxes:
+        if x2 <= x1 or y2 <= y1:
+            continue
+        crop = image.crop((x1, y1, x2, y2))
+        edges_crop = _canny_edges(crop)
+        edges_canvas.paste(edges_crop, (x1, y1))
+
+    return edges_canvas
 
 
 def run_adetailer(
@@ -167,10 +273,17 @@ def run_adetailer(
     if debug_dir:
         mask.save(os.path.join(debug_dir, "mask.png"))
 
+    # ---- edges (optional)
+    edges_for_guidance: Optional[Image.Image] = edges_image
+    if use_edges and edges_for_guidance is None:
+        edges_for_guidance = _build_edges_image(image, boxes)
+    if debug_dir and edges_for_guidance is not None:
+        edges_for_guidance.save(os.path.join(debug_dir, "edges_hand.png"))
+
     # ---- refine
-    if use_edges and edges_image is not None:
+    if use_edges and edges_for_guidance is not None:
         result = sd.edge_guided_refine(
-            pil_img=image, mask=mask, edges=edges_image,
+            pil_img=image, mask=mask, edges=edges_for_guidance,
             prompt=prompt, neg_prompt=neg_prompt,
             strength=denoise_strength, steps=steps, cfg=cfg,
             snapshot_dir=os.path.join(debug_dir, "inpaint") if debug_dir else None,
