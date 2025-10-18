@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtualenv
+.venv/
+env/
+venv/
+
+# PyCharm
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sonstiges
+.DS_Store
+
+# Local outputs & models
+output/
+models/
+
+# SD / DL Gewichte
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+*.engine
+
+# Sonstiges groß
+*.mp4
+*.mov
+*.zip
+*.tar
+*.tar.gz
