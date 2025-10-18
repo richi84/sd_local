@@ -3,7 +3,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from PIL import Image, ImageOps, ImageFilter, ImageDraw
+from PIL import Image, ImageOps, ImageFilter, ImageDraw, ImageChops
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDIMScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
 
@@ -230,10 +230,21 @@ class StableDiffusionLocal:
         mask_l = mask.convert("L").resize(pil_img.size, Image.BILINEAR)
 
         edges_inv = ImageOps.invert(edges)
-        edges_rgb = Image.merge("RGB", (edges_inv, edges_inv, edges_inv))
-        blended = Image.blend(pil_img, edges_rgb, intensity)
+        intensity_clamped = max(0.0, min(1.0, intensity))
+        if intensity_clamped >= 1.0:
+            edges_toned = edges_inv
+        elif intensity_clamped <= 0.0:
+            edges_toned = Image.new("L", edges_inv.size, color=255)
+        else:
+            white_bg = Image.new("L", edges_inv.size, color=255)
+            edges_toned = Image.blend(white_bg, edges_inv, intensity_clamped)
 
-        return Image.composite(blended, pil_img, mask_l)
+        edges_rgb = Image.merge("RGB", (edges_toned, edges_toned, edges_toned))
+        if edges_rgb.mode != pil_img.mode:
+            edges_rgb = edges_rgb.convert(pil_img.mode)
+        darkened = ImageChops.darker(pil_img, edges_rgb)
+
+        return Image.composite(darkened, pil_img, mask_l)
 
     def edge_guided_refine(
         self, pil_img: Image.Image, mask: Image.Image, edges: Image.Image,
