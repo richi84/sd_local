@@ -219,11 +219,21 @@ class StableDiffusionLocal:
         print("[INPAINT] Decoding ...")
         return self._decode_latents_to_image(latents)
 
-    def _blend_edges_into_image(self, pil_img: Image.Image, edges: Image.Image, intensity: float = 0.6) -> Image.Image:
+    def _blend_edges_into_image(
+        self,
+        pil_img: Image.Image,
+        edges: Image.Image,
+        mask: Image.Image,
+        intensity: float = 0.6,
+    ) -> Image.Image:
         edges = edges.convert("L").resize(pil_img.size, Image.BILINEAR)
+        mask_l = mask.convert("L").resize(pil_img.size, Image.BILINEAR)
+
         edges_inv = ImageOps.invert(edges)
         edges_rgb = Image.merge("RGB", (edges_inv, edges_inv, edges_inv))
-        return Image.blend(pil_img, edges_rgb, intensity)
+        blended = Image.blend(pil_img, edges_rgb, intensity)
+
+        return Image.composite(blended, pil_img, mask_l)
 
     def edge_guided_refine(
         self, pil_img: Image.Image, mask: Image.Image, edges: Image.Image,
@@ -231,7 +241,7 @@ class StableDiffusionLocal:
         steps: int = 36, cfg: float = 5.0,
         snapshot_dir: Optional[str] = None, snapshot_every: int = 0,
     ) -> Image.Image:
-        guided = self._blend_edges_into_image(pil_img, edges, intensity=0.6)
+        guided = self._blend_edges_into_image(pil_img, edges, mask, intensity=0.6)
         if snapshot_dir:
             self._ensure_dir(snapshot_dir)
             self._save_image(guided, os.path.join(snapshot_dir, "guided_input.png"))
