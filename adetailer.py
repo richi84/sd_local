@@ -14,6 +14,10 @@ def _ensure_dir(d: str):
     os.makedirs(d, exist_ok=True)
 
 
+def _safe_name(name: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in name)
+
+
 def _expand_bbox(
     bbox: Tuple[int, int, int, int],
     img_size: Tuple[int, int],
@@ -91,12 +95,14 @@ def run_adetailer(
     # ---- detection
     all_dets: List[Detection] = []
     det_logs = []
+    per_detector: List[Tuple[str, List[Detection]]] = []
     for det in detectors:
         name = det.__class__.__name__
         try:
             ds = det.detect(image, targets)
             all_dets.extend(ds)
             det_logs.append({"detector": name, "count": len(ds)})
+            per_detector.append((name, ds))
         except Exception as e:
             msg = f"Detector {name} failed: {e}"
             print("[ADetailer]", msg)
@@ -131,6 +137,26 @@ def run_adetailer(
             _save_overlay(image, boxes_original, overlay_path, extra_boxes=boxes)
         else:
             image.save(overlay_path)
+
+        for det_name, det_dets in per_detector:
+            det_overlay_path = os.path.join(
+                debug_dir, f"input_{_safe_name(det_name)}.png"
+            )
+            det_filtered = filter_by_targets(det_dets, targets, min_score=0.2)
+            det_boxes = [d.bbox for d in det_filtered]
+            if det_boxes:
+                det_expanded = [
+                    _expand_bbox(bbox, image.size, 0.10)
+                    for bbox in det_boxes
+                ]
+                _save_overlay(
+                    image,
+                    det_boxes,
+                    det_overlay_path,
+                    extra_boxes=det_expanded,
+                )
+            else:
+                image.save(det_overlay_path)
 
     if not sel:
         print("[ADetailer] No detections. Skipping refine.")
