@@ -96,6 +96,8 @@ class SimpleSkinDetector(BaseDetector):
         min_score: float = 0.4,
         max_per_target: int = 3,
         edge_penalty: float = 0.6,
+        hand_rel_area: Tuple[float, float, float] | None = None,
+        face_rel_area: Tuple[float, float, float] | None = None,
     ):
         self.min_area = min_area
         self.base_score = score
@@ -106,6 +108,9 @@ class SimpleSkinDetector(BaseDetector):
         self.min_score = min_score
         self.max_per_target = max_per_target
         self.edge_penalty = edge_penalty
+        # target specific relative area tuning (min, ideal, max)
+        self.hand_rel_area = hand_rel_area or (0.0015, 0.01, 0.08)
+        self.face_rel_area = face_rel_area or (0.004, 0.02, 0.18)
 
     def _aspect_bounds(self, target: Target) -> Tuple[float, float]:
         if target == "face":
@@ -123,14 +128,29 @@ class SimpleSkinDetector(BaseDetector):
         img_w, img_h = img_size
         rel_area = area / float(img_w * img_h)
 
-        if rel_area < self.min_rel_area or rel_area > self.max_rel_area:
+        if target == "face":
+            min_rel, ideal_rel, max_rel = self.face_rel_area
+        elif target == "hand":
+            min_rel, ideal_rel, max_rel = self.hand_rel_area
+        else:
+            min_rel, ideal_rel, max_rel = (
+                self.min_rel_area,
+                self.ideal_rel_area,
+                self.max_rel_area,
+            )
+
+        min_rel = max(self.min_rel_area, min_rel)
+        ideal_rel = max(min_rel, ideal_rel)
+        max_rel = min(self.max_rel_area, max_rel)
+
+        if rel_area < min_rel or rel_area > max_rel:
             return 0.0
 
         rel_score = 0.0
-        if self.ideal_rel_area > self.min_rel_area:
+        if ideal_rel > min_rel:
             rel_score = min(
                 1.0,
-                max(0.0, (rel_area - self.min_rel_area) / (self.ideal_rel_area - self.min_rel_area)),
+                max(0.0, (rel_area - min_rel) / (ideal_rel - min_rel)),
             )
 
         fill_score = min(1.0, max(0.0, (fill_ratio - self.min_fill_ratio) / max(1e-6, 1.0 - self.min_fill_ratio)))
@@ -193,6 +213,31 @@ class SimpleSkinDetector(BaseDetector):
         cb = ycbcr[:, :, 1]
         cr = ycbcr[:, :, 2]
         mask = (cb >= 77) & (cb <= 127) & (cr >= 133) & (cr <= 173)
+
+        # --- additional RGB-domain heuristics (helps suppress saturated reds)
+        rgb = np.array(img.convert("RGB"), dtype=np.uint8)
+        r = rgb[:, :, 0].astype(np.int16)
+        g = rgb[:, :, 1].astype(np.int16)
+        b = rgb[:, :, 2].astype(np.int16)
+        rgb_mask = (
+            (r > 80)
+            & (g > 35)
+            & (b > 15)
+            & ((np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) > 15)
+            & (np.abs(r - g) > 7)
+            & (r > g)
+            & (r > b)
+        )
+        sum_rgb = np.maximum(r + g + b, 1)
+        norm_r = r / sum_rgb
+        norm_g = g / sum_rgb
+        rgb_mask &= (
+            (norm_r >= 0.32)
+            & (norm_r <= 0.52)
+            & (norm_g >= 0.24)
+            & (norm_g <= 0.40)
+        )
+        mask &= rgb_mask
 
         # --- additional HSV filter to suppress background colors (e.g. foliage)
         hsv = np.array(img.convert("HSV"), dtype=np.uint8)
