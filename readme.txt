@@ -21,3 +21,8 @@ Hand-/Gesichtsdetektoren ergänzt werden. Zusätzlich steht ein OpenPose-Wrapper
 (`OpenposeDetector`) zur Verfügung, der über die ControlNet-Preprozessoren
 (`controlnet-aux`) Körper-, Hand- und Gesicht-Keypoints erkennt und daraus
 exakte Maskenbereiche ableitet.
+
+Seit `detectors.build_available_detectors` existiert, reicht ein einzelner
+Funktionsaufruf, um alle aktivierbaren Detektoren inklusive Fallback zu
+initialisieren. Die Funktion liefert zusätzlich Statusinformationen zurück, die
+direkt geloggt werden können (z. B. welche optionalen Pakete fehlen).
