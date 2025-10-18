@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Literal, Tuple
+from collections import deque
 import numpy as np
 from PIL import Image, ImageFilter, ImageDraw
 
@@ -69,6 +70,101 @@ class YOLOv8Detector(BaseDetector):
                 score = float(b.conf.item())
                 if "person" in targets and name == "person":
                     dets.append(Detection("person", (x1, y1, x2, y2), score))
+        return dets
+
+# Lightweight fallback detector -------------------------------------------
+class SimpleSkinDetector(BaseDetector):
+    """Naive skin-tone blob detector.
+
+    Provides a dependency-free heuristic so that the refinement pipeline can
+    still run when optional detectors (MediaPipe / YOLO) are unavailable.
+    The detector looks for skin-colored regions in YCbCr space, clusters them
+    via a simple flood fill and returns coarse bounding boxes tagged as
+    ``hand`` or ``face`` depending on the available targets.
+    """
+
+    def __init__(self, min_area: int = 600, score: float = 0.35):
+        self.min_area = min_area
+        self.score = score
+
+    def _classify_target(
+        self,
+        bbox: Tuple[int, int, int, int],
+        img_size: Tuple[int, int],
+        targets: List[Target],
+    ) -> Target:
+        x1, y1, x2, y2 = bbox
+        w = max(1, x2 - x1)
+        h = max(1, y2 - y1)
+        area = w * h
+        img_w, img_h = img_size
+        rel_area = area / float(img_w * img_h)
+        aspect = w / h
+
+        # Prefer ``face`` for roughly square, larger blobs towards the upper half
+        if "face" in targets and rel_area > 0.01 and 0.7 <= aspect <= 1.6 and y2 < img_h * 0.85:
+            return "face"
+        # Otherwise fall back to ``hand`` if requested
+        if "hand" in targets:
+            return "hand"
+        return targets[0]
+
+    def detect(self, img: Image.Image, targets: List[Target]) -> List[Detection]:
+        if not targets:
+            return []
+        if "hand" not in targets and "face" not in targets:
+            return []
+
+        ycbcr = np.array(img.convert("YCbCr"), dtype=np.uint8)
+        cb = ycbcr[:, :, 1]
+        cr = ycbcr[:, :, 2]
+        mask = (cb >= 77) & (cb <= 127) & (cr >= 133) & (cr <= 173)
+
+        h, w = mask.shape
+        visited = np.zeros_like(mask, dtype=bool)
+        dets: List[Detection] = []
+
+        for y in range(h):
+            for x in range(w):
+                if not mask[y, x] or visited[y, x]:
+                    continue
+
+                queue = deque([(x, y)])
+                visited[y, x] = True
+                min_x = max_x = x
+                min_y = max_y = y
+                area = 0
+
+                while queue:
+                    cx, cy = queue.popleft()
+                    area += 1
+                    if cx < min_x:
+                        min_x = cx
+                    if cx > max_x:
+                        max_x = cx
+                    if cy < min_y:
+                        min_y = cy
+                    if cy > max_y:
+                        max_y = cy
+
+                    for nx in (cx - 1, cx, cx + 1):
+                        if nx < 0 or nx >= w:
+                            continue
+                        for ny in (cy - 1, cy, cy + 1):
+                            if ny < 0 or ny >= h:
+                                continue
+                            if visited[ny, nx] or not mask[ny, nx]:
+                                continue
+                            visited[ny, nx] = True
+                            queue.append((nx, ny))
+
+                if area < self.min_area:
+                    continue
+
+                bbox = (min_x, min_y, max_x + 1, max_y + 1)
+                target = self._classify_target(bbox, (w, h), targets)
+                dets.append(Detection(target, bbox, self.score))
+
         return dets
 
 # Mask utilities
