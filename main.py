@@ -43,10 +43,10 @@ try:
 except Exception as e:
     print("[INFO] YOLOv8 not available:", e)
 
-# 3) ADetailer-Refine mit Debug einschalten
+# 3) ADetailer-Refine mit Debug einschalten (nur Hände)
 refined = run_adetailer(
     sd=sd, image=hi, prompt=prompt, neg_prompt=neg_prompt,
-    detectors=detectors, targets=["hand", "face"],
+    detectors=detectors, targets=["hand"],
     denoise_strength=0.30, steps=36, cfg=5.0,
     expand_px=14, blur_px=10,
     use_edges=False, edges_image=None,
