@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 from sd_local import StableDiffusionLocal
-from adetailer import run_adetailer
+from adetailer import prepare_adetailer, run_adetailer
 from detectors import build_available_detectors
 
 sd = StableDiffusionLocal("models/cyberrealistic_v90")
@@ -36,15 +36,21 @@ detectors, _ = build_available_detectors(
     mediapipe_kwargs={"min_detection_confidence": 0.5},
 )
 
-# 3) ADetailer-Refine mit Debug einschalten (nur Hände)
+# 3) Vorbereiten der Kantenbilder für ADetailer (nur Hände)
+prep = prepare_adetailer(image=hi, detectors=detectors, targets=["hand"])
+if prep.edges_image:
+    prep.edges_image.save(os.path.join(out_dir, "edges_hand.png"))
+
+# 4) ADetailer-Refine mit Debug einschalten (nur Hände)
 refined = run_adetailer(
     sd=sd, image=hi, prompt=prompt, neg_prompt=neg_prompt,
     detectors=detectors, targets=["hand"],
     denoise_strength=0.30, steps=36, cfg=5.0,
     expand_px=14, blur_px=10,
-    use_edges=False, edges_image=None,
+    use_edges=True, edges_image=prep.edges_image,
     debug_dir=os.path.join(out_dir, "adetail_debug"),
-    snapshot_every=3  # Inpaint-Snapshots
+    snapshot_every=3,  # Inpaint-Snapshots
+    preparation=prep,
 )
 refined.save(os.path.join(out_dir, "final_refined.png"))
 print(f"[DONE] saved to {out_dir}")
