@@ -17,4 +17,7 @@ nicht installiert sind, greift automatisch der neue `SimpleSkinDetector`. Dieser
 erstellt grobe Bounding-Boxes auf Basis eines einfachen Hautton-Filters, so dass
 `detections.json` nicht mehr leer bleibt und der ADetailer-Refine trotzdem eine
 Maske generieren kann. Für präzisere Ergebnisse können weiterhin spezialisierte
-Hand-/Gesichtsdetektoren ergänzt werden.
+Hand-/Gesichtsdetektoren ergänzt werden. Zusätzlich steht ein OpenPose-Wrapper
+(`OpenposeDetector`) zur Verfügung, der über die ControlNet-Preprozessoren
+(`controlnet-aux`) Körper-, Hand- und Gesicht-Keypoints erkennt und daraus
+exakte Maskenbereiche ableitet.

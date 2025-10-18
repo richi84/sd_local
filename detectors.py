@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Literal, Tuple
+from typing import List, Literal, Tuple, Any, Iterable
 from collections import deque
 import numpy as np
 from PIL import Image, ImageFilter, ImageDraw
@@ -70,6 +70,173 @@ class YOLOv8Detector(BaseDetector):
                 score = float(b.conf.item())
                 if "person" in targets and name == "person":
                     dets.append(Detection("person", (x1, y1, x2, y2), score))
+        return dets
+
+# OpenPose / ControlNet auxiliary detector ---------------------------------
+class OpenposeDetector(BaseDetector):
+    """Detector that builds bounding boxes from ControlNet's OpenPose keypoints."""
+
+    def __init__(
+        self,
+        include_body: bool = True,
+        include_hands: bool = True,
+        include_face: bool = True,
+        detect_resolution: int = 512,
+        image_resolution: int | None = None,
+        confidence_threshold: float = 0.1,
+    ) -> None:
+        try:
+            from controlnet_aux import OpenposeDetector as AuxOpenposeDetector  # type: ignore
+        except Exception as e:  # pragma: no cover - optional dependency
+            raise RuntimeError("controlnet_aux not installed") from e
+
+        self.include_body = include_body
+        self.include_hands = include_hands
+        self.include_face = include_face
+        self.detect_resolution = detect_resolution
+        self.image_resolution = image_resolution
+        self.confidence_threshold = confidence_threshold
+
+        if hasattr(AuxOpenposeDetector, "from_pretrained"):
+            pretrained_id = "lllyasviel/Annotators"
+            try:  # pragma: no cover - best effort optional download
+                self.detector = AuxOpenposeDetector.from_pretrained(pretrained_id)
+            except Exception:
+                self.detector = AuxOpenposeDetector()
+        else:
+            self.detector = AuxOpenposeDetector()
+
+    def _run_openpose(self, np_img: np.ndarray, hand_and_face: bool) -> dict[str, Any]:
+        kwargs = {
+            "detect_resolution": self.detect_resolution,
+            "hand_and_face": hand_and_face,
+        }
+        if self.image_resolution is not None:
+            kwargs["image_resolution"] = self.image_resolution
+
+        result = None
+        try:
+            result = self.detector(np_img, return_dict=True, **kwargs)
+        except TypeError:
+            result = self.detector(np_img, **kwargs)
+
+        if isinstance(result, dict):
+            return result
+
+        data: dict[str, Any] = {}
+        if isinstance(result, tuple):
+            if len(result) == 4:
+                _, bodies, hands, faces = result
+            elif len(result) == 3:
+                bodies, hands, faces = result
+            else:
+                bodies = result[0] if len(result) > 0 else []
+                hands = result[1] if len(result) > 1 else []
+                faces = result[2] if len(result) > 2 else []
+            data["bodies"] = bodies
+            data["hands"] = hands
+            data["faces"] = faces
+            return data
+
+        # Fallback to attributes exposed on the detector instance
+        data["bodies"] = getattr(self.detector, "pose_result", [])
+        data["hands"] = getattr(self.detector, "hands_result", [])
+        data["faces"] = getattr(self.detector, "face_result", [])
+        return data
+
+    def _iter_keypoints(self, entries: Any) -> Iterable[np.ndarray]:
+        if entries is None:
+            return []
+        if isinstance(entries, dict):
+            return self._iter_keypoints([entries])
+        if isinstance(entries, (list, tuple)):
+            arrays = []
+            for item in entries:
+                if item is None:
+                    continue
+                if isinstance(item, dict):
+                    if "keypoints" in item:
+                        kp = np.asarray(item["keypoints"], dtype=float)
+                    elif "pose_keypoints_2d" in item:
+                        kp = np.asarray(item["pose_keypoints_2d"], dtype=float)
+                    else:
+                        kp = np.asarray(item, dtype=float)
+                else:
+                    kp = np.asarray(item, dtype=float)
+                if kp.ndim == 1:
+                    if kp.size % 3 == 0:
+                        kp = kp.reshape(-1, 3)
+                    elif kp.size % 2 == 0:
+                        xy = kp.reshape(-1, 2)
+                        conf = np.ones((xy.shape[0], 1), dtype=float)
+                        kp = np.concatenate([xy, conf], axis=1)
+                arrays.append(kp)
+            return arrays
+        kp = np.asarray(entries, dtype=float)
+        if kp.ndim == 1 and kp.size % 3 == 0:
+            kp = kp.reshape(-1, 3)
+        return [kp]
+
+    def _bbox_from_keypoints(
+        self, points: np.ndarray, img_size: Tuple[int, int]
+    ) -> Tuple[int, int, int, int] | None:
+        if points.size == 0:
+            return None
+        conf_mask = points[:, 2] > self.confidence_threshold
+        if not np.any(conf_mask):
+            conf_mask = points[:, 2] > 0
+            if not np.any(conf_mask):
+                return None
+        xs = points[conf_mask, 0]
+        ys = points[conf_mask, 1]
+        if xs.size == 0 or ys.size == 0:
+            return None
+        img_w, img_h = img_size
+        x1 = int(np.clip(xs.min(), 0, img_w - 1))
+        y1 = int(np.clip(ys.min(), 0, img_h - 1))
+        x2 = int(np.clip(xs.max(), 0, img_w - 1))
+        y2 = int(np.clip(ys.max(), 0, img_h - 1))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return x1, y1, x2, y2
+
+    def detect(self, img: Image.Image, targets: List[Target]) -> List[Detection]:
+        need_body = self.include_body and "person" in targets
+        need_hand = self.include_hands and "hand" in targets
+        need_face = self.include_face and "face" in targets
+        if not (need_body or need_hand or need_face):
+            return []
+
+        np_img = np.array(img.convert("RGB"))
+        outputs = self._run_openpose(np_img, hand_and_face=(need_hand or need_face))
+        img_size = img.size
+
+        dets: List[Detection] = []
+
+        if need_body:
+            for kp in self._iter_keypoints(outputs.get("bodies")):
+                bbox = self._bbox_from_keypoints(kp, img_size)
+                if bbox is None:
+                    continue
+                score = float(np.clip(np.mean(kp[:, 2]), 0.0, 1.0)) if kp.size else 0.5
+                dets.append(Detection("person", bbox, score or 0.5))
+
+        if need_hand:
+            for kp in self._iter_keypoints(outputs.get("hands")):
+                bbox = self._bbox_from_keypoints(kp, img_size)
+                if bbox is None:
+                    continue
+                score = float(np.clip(np.mean(kp[:, 2]), 0.0, 1.0)) if kp.size else 0.6
+                dets.append(Detection("hand", bbox, score or 0.6))
+
+        if need_face:
+            for kp in self._iter_keypoints(outputs.get("faces")):
+                bbox = self._bbox_from_keypoints(kp, img_size)
+                if bbox is None:
+                    continue
+                score = float(np.clip(np.mean(kp[:, 2]), 0.0, 1.0)) if kp.size else 0.6
+                dets.append(Detection("face", bbox, score or 0.6))
+
         return dets
 
 # Lightweight fallback detector -------------------------------------------
