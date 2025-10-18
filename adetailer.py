@@ -1,6 +1,7 @@
 # adetailer.py
 import math
 import os, json
+from dataclasses import dataclass
 from typing import List, Optional, Literal, Tuple
 
 import numpy as np
@@ -9,6 +10,16 @@ from PIL import Image, ImageDraw, ImageFilter
 from detectors import BaseDetector, Detection, filter_by_targets, boxes_to_mask
 
 Targets = List[Literal["face","hand","person"]]
+
+
+@dataclass
+class ADetailerPreparation:
+    selected: List[Detection]
+    boxes_original: List[Tuple[int, int, int, int]]
+    boxes_expanded: List[Tuple[int, int, int, int]]
+    det_logs: List[dict]
+    per_detector: List[Tuple[str, List[Detection]]]
+    edges_image: Optional[Image.Image]
 
 
 def _ensure_dir(d: str):
@@ -170,6 +181,47 @@ def _build_edges_image(image: Image.Image, boxes: List[Tuple[int, int, int, int]
     return edges_canvas
 
 
+def prepare_adetailer(
+    image: Image.Image,
+    detectors: List[BaseDetector],
+    targets: Targets,
+    *,
+    expand_fraction: float = 0.10,
+) -> ADetailerPreparation:
+    all_dets: List[Detection] = []
+    det_logs: List[dict] = []
+    per_detector: List[Tuple[str, List[Detection]]] = []
+
+    for det in detectors:
+        name = det.__class__.__name__
+        try:
+            detections = det.detect(image, targets)
+            all_dets.extend(detections)
+            det_logs.append({"detector": name, "count": len(detections)})
+            per_detector.append((name, detections))
+        except Exception as e:
+            msg = f"Detector {name} failed: {e}"
+            print("[ADetailer]", msg)
+            det_logs.append({"detector": name, "error": str(e)})
+
+    selected = filter_by_targets(all_dets, targets, min_score=0.2)
+    boxes_original = [d.bbox for d in selected]
+    boxes_expanded = [
+        _expand_bbox(bbox, image.size, expand_fraction)
+        for bbox in boxes_original
+    ]
+    edges_image = _build_edges_image(image, boxes_expanded)
+
+    return ADetailerPreparation(
+        selected=selected,
+        boxes_original=boxes_original,
+        boxes_expanded=boxes_expanded,
+        det_logs=det_logs,
+        per_detector=per_detector,
+        edges_image=edges_image,
+    )
+
+
 def run_adetailer(
     sd,                         # StableDiffusionLocal instance
     image: Image.Image,
@@ -187,6 +239,7 @@ def run_adetailer(
     # --- NEW: debugging & snapshots ---
     debug_dir: Optional[str] = None,
     snapshot_every: int = 0,
+    preparation: Optional[ADetailerPreparation] = None,
 ) -> Image.Image:
     """
     1) run detectors -> boxes
@@ -198,29 +251,14 @@ def run_adetailer(
         _ensure_dir(debug_dir)
         image.save(os.path.join(debug_dir, "input_raw.png"))
 
-    # ---- detection
-    all_dets: List[Detection] = []
-    det_logs = []
-    per_detector: List[Tuple[str, List[Detection]]] = []
-    for det in detectors:
-        name = det.__class__.__name__
-        try:
-            ds = det.detect(image, targets)
-            all_dets.extend(ds)
-            det_logs.append({"detector": name, "count": len(ds)})
-            per_detector.append((name, ds))
-        except Exception as e:
-            msg = f"Detector {name} failed: {e}"
-            print("[ADetailer]", msg)
-            det_logs.append({"detector": name, "error": str(e)})
+    if preparation is None:
+        preparation = prepare_adetailer(image=image, detectors=detectors, targets=targets)
 
-    sel = filter_by_targets(all_dets, targets, min_score=0.2)
-    boxes_original = [d.bbox for d in sel]
-    expanded_boxes = [
-        _expand_bbox(bbox, image.size, 0.10)
-        for bbox in boxes_original
-    ]
-    boxes = expanded_boxes
+    sel = preparation.selected
+    boxes_original = preparation.boxes_original
+    boxes = preparation.boxes_expanded
+    det_logs = preparation.det_logs
+    per_detector = preparation.per_detector
 
     if debug_dir:
         # detections.json
@@ -232,7 +270,7 @@ def run_adetailer(
                         "target": d.target,
                         "score": d.score,
                         "bbox": d.bbox,
-                        "expanded_bbox": expanded_boxes[idx] if idx < len(expanded_boxes) else d.bbox,
+                        "expanded_bbox": boxes[idx] if idx < len(boxes) else d.bbox,
                     }
                     for idx, d in enumerate(sel)
                 ]
@@ -276,7 +314,7 @@ def run_adetailer(
     # ---- edges (optional)
     edges_for_guidance: Optional[Image.Image] = edges_image
     if use_edges and edges_for_guidance is None:
-        edges_for_guidance = _build_edges_image(image, boxes)
+        edges_for_guidance = preparation.edges_image
     if debug_dir and edges_for_guidance is not None:
         edges_for_guidance.save(os.path.join(debug_dir, "edges_hand.png"))
 
