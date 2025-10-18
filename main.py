@@ -31,12 +31,9 @@ hi = sd.img2img(
 )
 hi.save(os.path.join(out_dir, "pre_adetail.png"))
 
-# 2) Detektoren (optional)
+# 2) Detektor (MediaPipe)
 detectors, _ = build_available_detectors(
-    include_simple=True,
     mediapipe_kwargs={"min_detection_confidence": 0.5},
-    yolov8_kwargs={"weights": "yolov8n.pt", "conf": 0.25},
-    openpose_kwargs={"include_body": True, "include_hands": True, "include_face": True},
 )
 
 # 3) ADetailer-Refine mit Debug einschalten (nur Hände)

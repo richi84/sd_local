@@ -12,17 +12,9 @@ pip freeze > requirements.txt
 
 ### Hinweis zu Detektoren
 
-Falls optionale Bibliotheken wie MediaPipe oder die Ultralytics-YOLO-Implementierung
-nicht installiert sind, greift automatisch der neue `SimpleSkinDetector`. Dieser
-erstellt grobe Bounding-Boxes auf Basis eines einfachen Hautton-Filters, so dass
-`detections.json` nicht mehr leer bleibt und der ADetailer-Refine trotzdem eine
-Maske generieren kann. Für präzisere Ergebnisse können weiterhin spezialisierte
-Hand-/Gesichtsdetektoren ergänzt werden. Zusätzlich steht ein OpenPose-Wrapper
-(`OpenposeDetector`) zur Verfügung, der über die ControlNet-Preprozessoren
-(`controlnet-aux`) Körper-, Hand- und Gesicht-Keypoints erkennt und daraus
-exakte Maskenbereiche ableitet.
-
-Seit `detectors.build_available_detectors` existiert, reicht ein einzelner
-Funktionsaufruf, um alle aktivierbaren Detektoren inklusive Fallback zu
-initialisieren. Die Funktion liefert zusätzlich Statusinformationen zurück, die
-direkt geloggt werden können (z. B. welche optionalen Pakete fehlen).
+Das Projekt setzt ausschließlich auf den MediaPipe-basierten Handdetektor. Über
+`detectors.build_available_detectors` wird lediglich `MediaPipeHandsDetector`
+initialisiert; zusätzliche Fallbacks oder alternative Modelle wurden entfernt,
+dum den Ablauf so schlank wie möglich zu halten. Schlägt die Initialisierung
+fehl (z. B. weil MediaPipe nicht installiert ist), wird dies über den
+zurückgegebenen `DetectorStatus` gemeldet und der Refinement-Schritt übersprungen.
