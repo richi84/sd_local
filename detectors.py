@@ -74,26 +74,91 @@ class YOLOv8Detector(BaseDetector):
 
 # Lightweight fallback detector -------------------------------------------
 class SimpleSkinDetector(BaseDetector):
-    """Naive skin-tone blob detector.
+    """Naive skin-tone blob detector with extra heuristics.
 
     Provides a dependency-free heuristic so that the refinement pipeline can
-    still run when optional detectors (MediaPipe / YOLO) are unavailable.
-    The detector looks for skin-colored regions in YCbCr space, clusters them
-    via a simple flood fill and returns coarse bounding boxes tagged as
-    ``hand`` or ``face`` depending on the available targets.
+    still run when optional detectors (MediaPipe / YOLO) are unavailable.  The
+    detector looks for skin-colored regions in YCbCr space, clusters them via a
+    simple flood fill and returns coarse bounding boxes tagged as ``hand`` or
+    ``face`` depending on the available targets.  Additional scoring filters
+    keep only the most plausible regions to avoid an excessive number of false
+    positives when running with complex scenes.
     """
 
     def __init__(
         self,
         min_area: int = 600,
         score: float = 0.35,
+        min_rel_area: float = 0.002,
+        ideal_rel_area: float = 0.015,
         max_rel_area: float = 0.35,
         min_fill_ratio: float = 0.25,
+        min_score: float = 0.4,
+        max_per_target: int = 3,
+        edge_penalty: float = 0.6,
     ):
         self.min_area = min_area
-        self.score = score
+        self.base_score = score
+        self.min_rel_area = min_rel_area
+        self.ideal_rel_area = max(ideal_rel_area, min_rel_area)
         self.max_rel_area = max_rel_area
         self.min_fill_ratio = min_fill_ratio
+        self.min_score = min_score
+        self.max_per_target = max_per_target
+        self.edge_penalty = edge_penalty
+
+    def _aspect_bounds(self, target: Target) -> Tuple[float, float]:
+        if target == "face":
+            return 0.7, 1.6
+        return 0.35, 2.6
+
+    def _score_detection(
+        self,
+        target: Target,
+        bbox: Tuple[int, int, int, int],
+        area: int,
+        img_size: Tuple[int, int],
+        fill_ratio: float,
+    ) -> float:
+        img_w, img_h = img_size
+        rel_area = area / float(img_w * img_h)
+
+        if rel_area < self.min_rel_area or rel_area > self.max_rel_area:
+            return 0.0
+
+        rel_score = 0.0
+        if self.ideal_rel_area > self.min_rel_area:
+            rel_score = min(
+                1.0,
+                max(0.0, (rel_area - self.min_rel_area) / (self.ideal_rel_area - self.min_rel_area)),
+            )
+
+        fill_score = min(1.0, max(0.0, (fill_ratio - self.min_fill_ratio) / max(1e-6, 1.0 - self.min_fill_ratio)))
+
+        x1, y1, x2, y2 = bbox
+        w = max(1, x2 - x1)
+        h = max(1, y2 - y1)
+        aspect = w / h
+        lo, hi = self._aspect_bounds(target)
+        if aspect < lo:
+            aspect_score = max(0.0, aspect / lo)
+        elif aspect > hi:
+            aspect_score = max(0.0, hi / aspect)
+        else:
+            aspect_score = 1.0
+
+        touches_border = x1 <= 2 or y1 <= 2 or x2 >= img_w - 3 or y2 >= img_h - 3
+
+        score = 0.45 * fill_score + 0.35 * rel_score + 0.20 * aspect_score
+        if touches_border:
+            score *= self.edge_penalty
+
+        score = max(0.0, min(score, 0.99))
+
+        if self.base_score:
+            score = max(score, min(0.99, self.base_score))
+
+        return float(score)
 
     def _classify_target(
         self,
@@ -193,13 +258,21 @@ class SimpleSkinDetector(BaseDetector):
                 rel_area = area / float(w * h)
                 fill_ratio = area / float(bbox_area)
 
-                if rel_area > self.max_rel_area:
-                    continue
-                if fill_ratio < self.min_fill_ratio:
-                    continue
-
                 target = self._classify_target(bbox, (w, h), targets)
-                dets.append(Detection(target, bbox, self.score))
+                score = self._score_detection(target, bbox, area, (w, h), fill_ratio)
+                if score < self.min_score:
+                    continue
+                dets.append(Detection(target, bbox, score))
+
+        if self.max_per_target and dets:
+            grouped: dict[Target, List[Detection]] = {}
+            for det in dets:
+                grouped.setdefault(det.target, []).append(det)
+            limited: List[Detection] = []
+            for det_list in grouped.values():
+                det_list.sort(key=lambda d: d.score, reverse=True)
+                limited.extend(det_list[: self.max_per_target])
+            dets = limited
 
         return dets
 
