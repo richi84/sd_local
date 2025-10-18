@@ -54,7 +54,7 @@ def run_adetailer(
     """
     if debug_dir:
         _ensure_dir(debug_dir)
-        image.save(os.path.join(debug_dir, "input.png"))
+        image.save(os.path.join(debug_dir, "input_raw.png"))
 
     # ---- detection
     all_dets: List[Detection] = []
@@ -81,8 +81,11 @@ def run_adetailer(
                 "selected": [{"target": d.target, "score": d.score, "bbox": d.bbox} for d in sel]
             }, f, indent=2)
         # overlay of raw detections
+        overlay_path = os.path.join(debug_dir, "input.png")
         if boxes:
-            _save_overlay(image, boxes, os.path.join(debug_dir, "overlay.png"))
+            _save_overlay(image, boxes, overlay_path)
+        else:
+            image.save(overlay_path)
 
     if not sel:
         print("[ADetailer] No detections. Skipping refine.")
