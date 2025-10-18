@@ -83,9 +83,17 @@ class SimpleSkinDetector(BaseDetector):
     ``hand`` or ``face`` depending on the available targets.
     """
 
-    def __init__(self, min_area: int = 600, score: float = 0.35):
+    def __init__(
+        self,
+        min_area: int = 600,
+        score: float = 0.35,
+        max_rel_area: float = 0.35,
+        min_fill_ratio: float = 0.25,
+    ):
         self.min_area = min_area
         self.score = score
+        self.max_rel_area = max_rel_area
+        self.min_fill_ratio = min_fill_ratio
 
     def _classify_target(
         self,
@@ -162,6 +170,17 @@ class SimpleSkinDetector(BaseDetector):
                     continue
 
                 bbox = (min_x, min_y, max_x + 1, max_y + 1)
+                bbox_w = max(1, bbox[2] - bbox[0])
+                bbox_h = max(1, bbox[3] - bbox[1])
+                bbox_area = bbox_w * bbox_h
+                rel_area = area / float(w * h)
+                fill_ratio = area / float(bbox_area)
+
+                if rel_area > self.max_rel_area:
+                    continue
+                if fill_ratio < self.min_fill_ratio:
+                    continue
+
                 target = self._classify_target(bbox, (w, h), targets)
                 dets.append(Detection(target, bbox, self.score))
 
