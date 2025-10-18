@@ -1,11 +1,20 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Literal, Tuple, Any, Iterable
+from typing import List, Literal, Tuple, Any, Iterable, Dict, Optional
 from collections import deque
 import numpy as np
 from PIL import Image, ImageFilter, ImageDraw
 
 Target = Literal["face", "hand", "person"]
+
+
+@dataclass
+class DetectorStatus:
+    """Small helper for reporting detector initialization status."""
+
+    name: str
+    available: bool
+    error: Optional[str] = None
 
 @dataclass
 class Detection:
@@ -487,6 +496,63 @@ class SimpleSkinDetector(BaseDetector):
             dets = limited
 
         return dets
+
+# ---------------------------------------------------------------------------
+# Factory utilities
+def build_available_detectors(
+    *,
+    include_simple: bool = True,
+    simple_kwargs: Optional[Dict[str, Any]] = None,
+    include_mediapipe: bool = True,
+    mediapipe_kwargs: Optional[Dict[str, Any]] = None,
+    include_yolov8: bool = True,
+    yolov8_kwargs: Optional[Dict[str, Any]] = None,
+    include_openpose: bool = True,
+    openpose_kwargs: Optional[Dict[str, Any]] = None,
+    verbose: bool = True,
+) -> Tuple[List[BaseDetector], List[DetectorStatus]]:
+    """Return initialized detectors together with availability logs.
+
+    The helper centralises the optional-dependency handling that previously
+    lived in :mod:`main`.  Callers can toggle the desired detectors via the
+    ``include_*`` flags and pass constructor kwargs through the dedicated
+    ``*_kwargs`` dictionaries.  A :class:`DetectorStatus` entry is returned for
+    every attempted detector to make it straightforward to surface a uniform
+    log message to the user.
+    """
+
+    detectors: List[BaseDetector] = []
+    statuses: List[DetectorStatus] = []
+
+    def _append(
+        enabled: bool,
+        cls: type[BaseDetector],
+        name: str,
+        kwargs: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not enabled:
+            return
+        try:
+            detector = cls(**(kwargs or {}))
+        except Exception as exc:  # pragma: no cover - optional deps
+            statuses.append(DetectorStatus(name=name, available=False, error=str(exc)))
+        else:
+            detectors.append(detector)
+            statuses.append(DetectorStatus(name=name, available=True))
+
+    _append(include_simple, SimpleSkinDetector, "SimpleSkinDetector", simple_kwargs)
+    _append(include_mediapipe, MediaPipeHandsDetector, "MediaPipeHandsDetector", mediapipe_kwargs)
+    _append(include_yolov8, YOLOv8Detector, "YOLOv8Detector", yolov8_kwargs)
+    _append(include_openpose, OpenposeDetector, "OpenposeDetector", openpose_kwargs)
+
+    if verbose:
+        for status in statuses:
+            if status.available:
+                print(f"[INFO] {status.name} ready")
+            else:
+                print(f"[INFO] {status.name} not available: {status.error}")
+
+    return detectors, statuses
 
 # Mask utilities
 def boxes_to_mask(size: Tuple[int,int], boxes: List[Tuple[int,int,int,int]],
