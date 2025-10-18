@@ -123,10 +123,27 @@ class SimpleSkinDetector(BaseDetector):
         if "hand" not in targets and "face" not in targets:
             return []
 
+        # --- basic skin chroma mask (YCbCr)
         ycbcr = np.array(img.convert("YCbCr"), dtype=np.uint8)
         cb = ycbcr[:, :, 1]
         cr = ycbcr[:, :, 2]
         mask = (cb >= 77) & (cb <= 127) & (cr >= 133) & (cr <= 173)
+
+        # --- additional HSV filter to suppress background colors (e.g. foliage)
+        hsv = np.array(img.convert("HSV"), dtype=np.uint8)
+        h = hsv[:, :, 0]
+        s = hsv[:, :, 1]
+        v = hsv[:, :, 2]
+        warm_hues = (h <= 50) | (h >= 200)
+        hsv_mask = warm_hues & (s >= 40) & (s <= 200) & (v >= 60) & (v <= 245)
+        mask &= hsv_mask
+
+        # --- light morphological cleanup to remove isolated noise
+        if mask.any():
+            mask_img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+            mask_img = mask_img.filter(ImageFilter.MaxFilter(size=3))
+            mask_img = mask_img.filter(ImageFilter.MinFilter(size=3))
+            mask = np.array(mask_img, dtype=bool)
 
         h, w = mask.shape
         visited = np.zeros_like(mask, dtype=bool)
