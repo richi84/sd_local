@@ -9,3 +9,12 @@ Zahnrad -> Settings -> Python -> Interpreter -> AddInterpreter -> Select Existin
 
 Update der requirements:
 pip freeze > requirements.txt
+
+### Hinweis zu Detektoren
+
+Falls optionale Bibliotheken wie MediaPipe oder die Ultralytics-YOLO-Implementierung
+nicht installiert sind, greift automatisch der neue `SimpleSkinDetector`. Dieser
+erstellt grobe Bounding-Boxes auf Basis eines einfachen Hautton-Filters, so dass
+`detections.json` nicht mehr leer bleibt und der ADetailer-Refine trotzdem eine
+Maske generieren kann. Für präzisere Ergebnisse können weiterhin spezialisierte
+Hand-/Gesichtsdetektoren ergänzt werden.

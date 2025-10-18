@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from sd_local import StableDiffusionLocal
 from adetailer import run_adetailer
-from detectors import MediaPipeHandsDetector, YOLOv8Detector  # optional
+from detectors import MediaPipeHandsDetector, YOLOv8Detector, SimpleSkinDetector  # optional
 
 sd = StableDiffusionLocal("models/cyberrealistic_v90")
 
@@ -32,7 +32,7 @@ hi = sd.img2img(
 hi.save(os.path.join(out_dir, "pre_adetail.png"))
 
 # 2) Detektoren (optional)
-detectors = []
+detectors = [SimpleSkinDetector()]
 try:
     detectors.append(MediaPipeHandsDetector(min_detection_confidence=0.5))
 except Exception as e:
